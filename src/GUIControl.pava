@@ -1,0 +1,267 @@
+import java.util.Observer;
+import java.util.Observable;
+
+public class GUIControl implements Observer {
+    private MillGame game;
+    private GUIMillBoard guiBoard;
+    private GUI gui;
+    private GUIPlayer whitePlayer,
+                      blackPlayer;
+
+    private MoveParser moveParser;
+    private MillAI ai;
+
+    private boolean highlightLegalSquares;
+    private boolean humanMoving;
+    private boolean gameRunning;
+    private Thread cpuMatchThread;
+
+    public GUIControl(GUIMillBoard guiBoard, GUI gui) {
+        if (guiBoard == null) {
+            throw new IllegalArgumentException("GUIControl(GUIMillBoard,GUI): Parameter 'GUIMillBoard' can't be null.");
+        }
+        if (gui == null) {
+            throw new IllegalArgumentException("GUIControl(GUIMillBoard,GUI): Parameter 'GUI' can't be null.");
+        }
+        this.game = null;
+        this.guiBoard = guiBoard;
+        this.gui = gui;
+        this.whitePlayer = null;
+        this.blackPlayer = null;
+
+        this.moveParser = new MoveParser(this.guiBoard);
+        this.moveParser.addObserver(this);
+        this.ai = new MillAI();
+
+        this.highlightLegalSquares = true;
+        this.gameRunning = false;
+        this.cpuMatchThread = null;
+    }
+
+    public void setHighlightLegalSquares(boolean value) {
+        if (this.highlightLegalSquares != value) {
+            this.highlightLegalSquares = value;
+
+            if (this.gameRunning) {
+                this.guiBoard.setHighlightLegalSquares(value);
+                this.guiBoard.repaint();    
+            }
+        }
+    }
+
+    public void newGame(MillGame game, GUIPlayer whitePlayer, GUIPlayer blackPlayer) {
+        this.stopGame();
+        this.game = game;
+        this.continueGame(whitePlayer, blackPlayer);
+    }
+
+    public void continueGame(GUIPlayer whitePlayer, GUIPlayer blackPlayer) {
+        this.whitePlayer = whitePlayer;
+        this.blackPlayer = blackPlayer;
+
+        if (this.game.getGameState() == MillGame.PHASE_GAME_OVER) {
+            System.out.println("Can't continue: Game is over");
+            return;
+        }
+
+        this.gameRunning = true;
+        this.moveParser.setGame(this.game);
+        this.guiBoard.setGame(this.game);
+        this.whitePlayer.setChoicesActive(false);
+        this.blackPlayer.setChoicesActive(false);
+        this.guiBoard.setHighlightLegalSquares(this.highlightLegalSquares);
+
+// ########
+        // kone vs. kone
+        if (whitePlayer.getPlayerChoice() == GUIPlayer.CPU &&
+            blackPlayer.getPlayerChoice() == GUIPlayer.CPU) {
+                this.moveParser.setClickable(false);
+                this.computerMatch();
+        }
+        else {
+            // (ihminen vs. ihminen) TAI (kone vs. ihminen) TAI (ihminen vs. kone)
+            if (this.game.getActivePlayer() == MillGame.WHITE_PLAYER) { // valkoinen aloittaa
+                if (this.whitePlayer.getPlayerChoice() == GUIPlayer.CPU) { // tietokone aloittaa
+                    this.computerMoves(this.whitePlayer);
+                    this.moveParser.setPlayer(this.blackPlayer);
+                }
+                else {
+                    this.moveParser.setPlayer(this.whitePlayer);
+                }
+            }
+            else { // musta aloittaa
+                if (this.blackPlayer.getPlayerChoice() == GUIPlayer.CPU) { // tietokone aloittaa
+                    this.computerMoves(this.blackPlayer);
+                    this.moveParser.setPlayer(this.whitePlayer);
+                }
+                else {
+                    this.moveParser.setPlayer(this.blackPlayer);
+                }
+            }
+            this.moveParser.setClickable(true);
+        }
+        this.guiBoard.repaint();
+        this.gui.refreshButtons();
+// ##########
+    }
+
+    public void stopGame() {
+        this.gameRunning = false;
+        this.moveParser.setClickable(false);
+        this.guiBoard.setHighlightLegalSquares(false);
+        if (this.whitePlayer != null) {        
+            this.whitePlayer.setActive(false);
+            this.whitePlayer.setChoicesActive(true);
+        }
+        if (this.blackPlayer != null) {        
+            this.blackPlayer.setActive(false);
+            this.blackPlayer.setChoicesActive(true);
+        }
+        this.ai.stopSearch();
+        // ########### kaikki säikeet pysäytetään tässä ##############
+        this.gui.refreshButtons();
+        this.guiBoard.repaint();
+    }
+
+    public void undo() {
+        this.stopGame();
+        this.moveParser.clearSelections();
+        this.game.undo();
+        this.guiBoard.repaint();
+        this.gui.refreshButtons();
+    }
+
+    public void redo() {
+        this.stopGame();
+        this.moveParser.clearSelections();
+        this.game.redo();
+        this.guiBoard.repaint();
+        this.gui.refreshButtons();
+    }
+
+    public boolean gameIsRunning() {
+        return this.gameRunning;
+    }
+
+// ######### JA ETEENPÄIN...
+    private void computerMatch() {
+        this.cpuMatchThread = new Thread() {
+            public void run() {
+                GUIPlayer current,
+                          opponent;
+                
+                if (game.getActivePlayer() == MillGame.WHITE_PLAYER) {
+                    current = whitePlayer;
+                    opponent = blackPlayer;
+                }
+                else {
+                    current = blackPlayer;
+                    opponent = whitePlayer;
+                }
+
+                try {
+                    boolean victory = false;
+                	while( !this.isInterrupted() && !victory && gameRunning) {
+                        Thread.sleep(2000); // 2 sekuntia ylimääräistä taukoa
+                        victory = computerMoves(current);
+                            // guiBoard-olion nappulat on syytä päivittää
+                        if (this.isInterrupted() || victory || !gameRunning) {
+                            break;
+                        }
+
+                        Thread.sleep(2000); // 2 sekuntia ylimääräistä taukoa
+                        victory = computerMoves(opponent);
+                            // guiBoard-olion nappulat on syytä päivittää
+                    }
+                }
+                catch (InterruptedException e) {
+                }
+            }
+        };
+        this.cpuMatchThread.start();
+    }
+
+    private boolean computerMoves(GUIPlayer player) {
+        this.moveParser.setClickable(false);
+        // ################  INFOTULOSTUS OMANA SÄIKEENÄ  #####################
+        Move move = this.ai.depthSearch(this.game, (byte)0);
+        // ################# ANIMOINTI OMANA SÄIKEENÄ ########################
+        if (this.gameRunning) {
+            return this.game.makeMove(move);    
+        }
+        return false;
+    }
+
+    
+
+    private boolean humanMoves(Move move) {
+        boolean victory = this.game.makeMove(move);
+        this.guiBoard.repaint();
+        return victory;
+    }
+
+    public void update(Observable o, Object move) {
+        UpdateThread update = new UpdateThread( (Move) move );
+        update.start();
+    }
+
+
+    private class UpdateThread extends Thread {
+        private Move move;
+
+        public UpdateThread(Move move) {
+            this.move = move;
+        }
+
+        public void run() {
+            moveParser.setClickable(false);
+            if (humanMoves(this.move)) {
+                System.out.println("WIN!");
+            }
+
+            if (game.getActivePlayer() == MillGame.WHITE_PLAYER &&
+                whitePlayer.getPlayerChoice() == GUIPlayer.CPU) {
+                    whitePlayer.setActive(true);
+                    blackPlayer.setActive(false);
+                    whitePlayer.validate();
+                    blackPlayer.validate();
+
+                    if (computerMoves(whitePlayer)) {
+                        System.out.println("Kone voitti!");
+                    }
+            }
+            else if (game.getActivePlayer() == MillGame.BLACK_PLAYER &&
+                     blackPlayer.getPlayerChoice() == GUIPlayer.CPU) {
+                    blackPlayer.setActive(true);
+                    whitePlayer.setActive(false);
+                    whitePlayer.validate();
+                    blackPlayer.validate();
+
+                    if (computerMoves(blackPlayer)) {
+                        System.out.println("Kone voitti!");
+                    }
+            }
+
+            guiBoard.repaint();
+
+
+    // VOITTOTARKISTUS !!  #########
+
+            // Ei ole väliä liikuttiko tietokone, sillä
+            // joka tapauksessa seuraava vuoro on ihmisellä
+            if (game.getActivePlayer() == MillGame.WHITE_PLAYER) {
+                moveParser.setPlayer(whitePlayer);
+                whitePlayer.setActive(true);
+                blackPlayer.setActive(false);
+            }
+            else {
+                moveParser.setPlayer(blackPlayer);
+                blackPlayer.setActive(true);
+                whitePlayer.setActive(false);
+            }
+            whitePlayer.validate();
+            blackPlayer.validate();
+            moveParser.setClickable(true); // 'computerMoves' saattoi ottaa klikkaukset pois päältä...
+        }
+    }
+}

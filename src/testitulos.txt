@@ -1,0 +1,2 @@
+isLegal-metodi: Aikaa kului 22250ms.  Kierroksia: 1000  Sallittuja siirtoja:50
+parannettu metodi: Aikaa kului 4390ms.  Kierroksia: 10000  Sallittuja siirtoja:50
